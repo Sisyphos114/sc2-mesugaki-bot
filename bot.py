@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+import random
 import traceback
 
 import sc2.unit as _sc2_unit
 from sc2.bot_ai import BotAI
+from sc2.data import Result
 from sc2.ids.unit_typeid import UnitTypeId as U
 
 ARMY_TYPES = (U.ZEALOT, U.STALKER)
+
+GREETINGS = [
+    "杂鱼~ 又来送头了吗？今天就让你见识一下本大人的厉害~",
+    "诶嘿~ 杂鱼大人居然真的敢来挑战我~ 好勇敢呢，可惜没用~",
+    "哼~ 又是你呀杂鱼~ 这次可别再三分钟就投降哦~",
+    "杂鱼~杂鱼~ 来了来了，本大人等你好久了呢~",
+]
+BEGS = [
+    "呜……等、等一下啦杂鱼大人~ 只是让着你而已，别当真嘛~",
+    "诶诶诶？本大人才没有输呢，只是手滑了啦~",
+    "呜呜……才、才不是在求饶哦，只是暂时休息一下~",
+    "哼……就、就让你赢一点点好了，别得意哦杂鱼~",
+]
+GG_LINE = "GG~ 哼，这次算你赢，下次可没这么好运了哦~"
+
+CHAT_COOLDOWN = 6.0
 
 
 def _safe_orders(self):
@@ -34,13 +52,30 @@ class ExecutorBot(BotAI):
         self._last_state_push = 0.0
         self._reported_errors = 0
         self._scout_tag: int | None = None
+        self._last_chat = -100.0
+        self._greeted = False
+        self._said_gg = False
+        self._beg_at = -100.0
+        self._beg_count = 0
+        self._rng = random.Random()
 
     async def on_start(self) -> None:
         print(f"[bot] 开局：{self.race.name} vs {self.enemy_race.name if self.enemy_race else '?'}")
 
+    async def on_end(self, game_result: Result) -> None:
+        print(f"[bot] 结束：{game_result.name}")
+        if game_result == Result.Defeat and not self._said_gg:
+            self._said_gg = True
+            try:
+                await self.chat_send(GG_LINE)
+            except Exception:
+                pass
+
     async def on_step(self, iteration: int) -> None:
         try:
+            await self._greet()
             await self._maybe_chat()
+            await self._maybe_beg()
             self._push_state()
             if self._gate("house", 22):
                 await self._housekeeping()
@@ -63,10 +98,52 @@ class ExecutorBot(BotAI):
             return True
         return False
 
+    async def _greet(self) -> None:
+        # 开局动画大约 4 秒，太早发的聊天会被吞掉
+        if self._greeted or self.time < 5:
+            return
+        self._greeted = True
+        await self._chat(self._rng.choice(GREETINGS))
+
+    async def _chat(self, text: str) -> None:
+        # 星际对过密的聊天会直接丢包，隔几秒再说
+        if not text or self.time - self._last_chat < CHAT_COOLDOWN:
+            return
+        self._last_chat = self.time
+        await self.chat_send(text)
+        print(f"[chat] {text}")
+
     async def _maybe_chat(self) -> None:
         message = self.brain.take_message()
         if message:
-            await self.chat_send(message)
+            await self._chat(message)
+
+    async def _maybe_beg(self) -> None:
+        if self._said_gg or self.time < 60 or not self._losing():
+            return
+        if self.time - self._beg_at < 25:
+            return
+        self._beg_at = self.time
+        if self.townhalls.amount == 0:
+            self._said_gg = True
+            await self._chat(GG_LINE)
+            return
+        if self._beg_count >= 4:
+            return
+        self._beg_count += 1
+        await self._chat(self._rng.choice(BEGS))
+
+    def _losing(self) -> bool:
+        if self.time < 60:
+            return False
+        if self.townhalls.amount == 0:
+            return True
+        threats = self.enemy_units.filter(
+            lambda u: any(u.distance_to(t) < 18 for t in self.townhalls)
+        )
+        if threats.amount >= 6 and self.supply_army <= 2:
+            return True
+        return self.supply_used < 15 and self.workers.amount < 5
 
     def _push_state(self) -> None:
         loop = self.state.game_loop

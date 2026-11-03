@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sys
+import urllib.request
 from pathlib import Path
 
 os.environ.setdefault("SC2PATH", r"E:\StarCraft II")
@@ -24,6 +27,15 @@ MAPS = {
 RACES = {"protoss": Race.Protoss, "terran": Race.Terran, "zerg": Race.Zerg}
 
 
+def llm_alive(url: str) -> bool:
+    base = url.rsplit("/v1/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=3) as resp:
+            return json.loads(resp.read().decode()).get("status") == "ok"
+    except Exception:
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="和本地 LLM 打星际争霸2")
     parser.add_argument("--map", default="kairos", choices=MAPS.keys())
@@ -38,9 +50,16 @@ def main() -> None:
     replay = Path(args.replay)
     replay.parent.mkdir(parents=True, exist_ok=True)
 
+    if not args.no_llm and not llm_alive(args.llm_url):
+        print("[main] 连不上模型服务，先双击跑 run_llm.bat，等它打印出 listening on 再开局。")
+        print(f"[main] 如果你只想让 bot 用默认打法，加 --no-llm 启动。当前地址: {args.llm_url}")
+        sys.exit(1)
+
     brain = Brain(args.llm_url, interval=args.interval, enabled=not args.no_llm)
     brain.start()
 
+    if not args.no_llm:
+        print(f"[main] 模型服务正常: {args.llm_url}")
     print(f"[main] 你 = {args.me}，对手 = {args.bot_race}，地图 = {args.map}")
     print("[main] 正在拉起两个星际客户端，稍等 10~20 秒……")
 
